@@ -4,13 +4,18 @@ import json
 import time
 import threading
 
-from utils.checksum import compute_checksum
-from utils.formatData import format_data
+from enums.PacketType import PacketType
+from utils.Checksum import compute_checksum
+from utils.FormatData import format_data
 
 SERVER_IP = "0.0.0.0"
 SERVER_PORT = 5005
 BUFFER_SIZE = 65535
+
 sensors = {}  # sensor_id -> {"token": str, "addr": tuple}
+
+def send_json(sock, data, addr):
+    sock.sendto(json.dumps(data).encode("utf-8"), addr)
 
 def handle_packet(sock, data, addr):
     try:
@@ -22,6 +27,19 @@ def handle_packet(sock, data, addr):
     sensor_id = packet.get("sensor_id")
     token = packet.get("token")
     timestamp = packet.get("timestamp", int(time.time()))
+
+    if packet.get("checksum") != compute_checksum(packet):
+        print(f"INFO: {sensor_id} CORRUTPED DATA at {timestamp}. REQUESTING DATA")
+
+        resend_request = {
+            "timestamp": int(time.time()),
+            "sensor_id": sensor_id,
+            "type": PacketType.REQUEST_RESEND.value
+        }
+
+        resend_request["checksum"] = compute_checksum(resend_request)
+        send_json(sock, resend_request, addr)
+        return
 
     if not token:
         token = random.getrandbits(32)
@@ -42,10 +60,6 @@ def handle_packet(sock, data, addr):
         print(f"WARNING: Invalid token from sensor {sensor_id}")
         return
 
-    if packet.get("checksum") != compute_checksum(packet):
-        print(f"WARNING: Invalid checksum from sensor {sensor_id}")
-        return
-
     params = {
         key: value for key, value in packet.items()
         if key not in ("timestamp", "sensor_id", "token", "checksum", "low_battery")
@@ -53,6 +67,16 @@ def handle_packet(sock, data, addr):
 
     low_battery = bool(packet.get("low_battery"))
     print(format_data(sensor_id, timestamp, params, low_battery))
+
+    confirmation = {
+        "timestamp": int(time.time()),
+        "sensor_id": sensor_id,
+        "type": PacketType.DATA_RECEIVED.value,
+        "checksum": None
+    }
+
+    confirmation["checksum"] = compute_checksum(confirmation)
+    send_json(sock, confirmation, addr)
 
 def listen(stop_event, server_ip, server_port):
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
