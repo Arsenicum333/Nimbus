@@ -2,11 +2,11 @@ import socket
 import json
 import time
 import threading
-import zlib
 
 from enums.SensorID import SensorID
 from data.manualData import manual_data
 from data.randomData import random_data
+from utils.checksum import compute_checksum
 
 SERVER_IP = "127.0.0.1"
 SERVER_PORT = 5005
@@ -19,32 +19,7 @@ tokens = {}
 auto_thread = None
 auto_running = False
 
-def to_json_serializable(obj):
-    if isinstance(obj, dict):
-        return {key: to_json_serializable(value) for key, value in obj.items()}
-    elif isinstance(obj, list):
-        return [to_json_serializable(value) for value in obj]
-    elif hasattr(obj, "value"): # For Enum
-        return obj.value
-    else:
-        return obj
-
-def compute_checksum(data: dict) -> int:
-    data_without_checksum = {key: value for key, value in data.items() if key != "checksum"}
-    data_without_checksum = to_json_serializable(data_without_checksum)
-
-    json_string = json.dumps(
-        data_without_checksum,
-        sort_keys=True,
-        separators=(",", ":")
-    )
-
-    json_bytes = json_string.encode("utf-8")
-
-    return zlib.crc32(json_bytes) & 0xFFFFFFFF
-
 def send_json(data: dict):
-    data = to_json_serializable(data)
     data["checksum"] = compute_checksum(data)
     sock.sendto(json.dumps(data).encode("utf-8"), (SERVER_IP, SERVER_PORT))
 
@@ -86,6 +61,21 @@ def make_data(sensor_id, obj):
 
     send_json(payload)
 
+def send_manual():
+    for sensor in SensorID:
+        print(f"{sensor.value}) {sensor.name}")
+
+    try:
+        sensorID_val = int(input("Select sensor ID (0–3): "))
+        sensor = SensorID(sensorID_val)
+    except (ValueError, KeyError):
+        print("Invalid selection")
+        return
+
+    obj = manual_data(sensor)
+    make_data(sensor.value, obj)
+    print(f"Manual message for {sensor.name} sent")
+
 def auto_loop():
     global auto_running
 
@@ -126,21 +116,6 @@ def start_auto():
 def stop_auto():
     global auto_running
     auto_running = False
-
-def send_manual():
-    for sensor in SensorID:
-        print(f"{sensor.value}) {sensor.name}")
-
-    try:
-        sensorID_val = int(input("Select sensor ID (0–3): "))
-        sensor = SensorID(sensorID_val)
-    except (ValueError, KeyError):
-        print("Invalid selection")
-        return
-
-    obj = manual_data(sensor)
-    make_data(sensor.value, obj)
-    print(f"Manual message for {sensor.name} sent")
 
 def main():
     print("=== FIITMeteo ===")

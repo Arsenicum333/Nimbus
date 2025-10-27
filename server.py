@@ -2,38 +2,15 @@ import random
 import socket
 import json
 import time
-import zlib
 import threading
+
+from utils.checksum import compute_checksum
+from utils.formatData import format_data
 
 SERVER_IP = "0.0.0.0"
 SERVER_PORT = 5005
 BUFFER_SIZE = 65535
 sensors = {}  # sensor_id -> {"token": str, "addr": tuple}
-
-def compute_checksum(data: dict) -> int:
-    data_without_checksum = {key: value for key, value in data.items() if key != "checksum"}
-
-    json_string = json.dumps(
-        data_without_checksum,
-        sort_keys=True,
-        separators=(",", ":")
-    )
-
-    json_bytes = json_string.encode("utf-8")
-
-    return zlib.crc32(json_bytes) & 0xFFFFFFFF
-
-def format_data(sensor_id, timestamp, params, low_battery):
-    header = f"{timestamp} - "
-
-    if low_battery:
-        header += f"WARNING: LOW BATTERY {sensor_id}\n"
-    else:
-        header += f"{sensor_id}\n"
-
-    line = "; ".join(f"{key}: {value}" for key, value in params.items()) + ";"
-
-    return header + line + "\n"
 
 def handle_packet(sock, data, addr):
     try:
