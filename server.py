@@ -12,7 +12,7 @@ SERVER_IP = "0.0.0.0"
 SERVER_PORT = 5005
 BUFFER_SIZE = 65535
 
-sensors = {}  # sensor_id -> {"token": str, "addr": tuple}
+sensors = {} # sensor_id -> {"token": str, "addr": tuple}
 
 def send_json(sock, data, addr):
     sock.sendto(json.dumps(data).encode("utf-8"), addr)
