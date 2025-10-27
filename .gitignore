@@ -1,0 +1,4 @@
+.vscode
+pycache/
+*.py[cod]
+*$py.class
