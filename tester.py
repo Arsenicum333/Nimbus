@@ -5,7 +5,7 @@ import time
 
 from enums.PacketType import PacketType
 from enums.SensorID import SensorID
-from data.ManualData import manual_data
+from utils.ManualData import manual_data
 from utils.SensorManager import SensorManager
 from utils.Checksum import compute_checksum
 
@@ -161,34 +161,39 @@ def send_corrupted():
         print("Invalid input")
 
 def main():
-    print("=== FIITMeteo ===")
     global SERVER_IP, SERVER_PORT
-    SERVER_IP = input(f"Enter server IP [{SERVER_IP}]: ").strip() or SERVER_IP
-    port_in = input(f"Enter server PORT [{SERVER_PORT}]: ").strip()
-    SERVER_PORT = int(port_in) if port_in else SERVER_PORT
+
+    print("=== FIITMeteo ===")
 
     while True:
         print("\nMenu:")
-        print("1) Start automatic data sending")
-        print("2) Stop automatic data sending")
-        print("3) Send manual message")
-        print("4) Send corrupted next automatic packet")
-        print("q) Quit")
+        print("1) Configure IP/PORT")
+        print("2) Start automatic data sending")
+        print("3) Stop automatic data sending")
+        print("4) Send manual message")
+        print("5) Send corrupted next automatic packet")
+        print("6) Exit")
         cmd = input().strip().lower()
 
         if cmd == "1":
-            start_all_sensors()
+            SERVER_IP = input(f"\nEnter server IP [{SERVER_IP}]: ").strip() or SERVER_IP
+            port_input = input(f"Enter server PORT [{SERVER_PORT}]: ").strip()
+            SERVER_PORT = int(port_input) if port_input else SERVER_PORT
+            print(f"Configuration set to {SERVER_IP}:{SERVER_PORT}")
         elif cmd == "2":
-            stop_all_sensors()
+            start_all_sensors()
         elif cmd == "3":
-            send_manual()
-        elif cmd == "4":
-            send_corrupted()
-        elif cmd == "q":
             stop_all_sensors()
+        elif cmd == "4":
+            send_manual()
+        elif cmd == "5":
+            send_corrupted()
+        elif cmd == "6":
+            stop_all_sensors()
+            print("\nExiting...")
             break
         else:
-            print("Unknown command")
+            print("\nUnknown command")
 
 if __name__ == "__main__":
     main()

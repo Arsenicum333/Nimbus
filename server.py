@@ -92,25 +92,50 @@ def listen(stop_event, server_ip, server_port):
                 continue
     finally:
         sock.close()
-        print("Server stopped")
 
-if __name__ == "__main__":
-    print("=== Server ===")
-    SERVER_IP = input("Enter server IP [0.0.0.0]: ").strip() or SERVER_IP
-    port_input = input("Enter server PORT [5005]: ").strip()
-    SERVER_PORT = int(port_input) if port_input else SERVER_PORT
-    print(f"\nServer listening on {SERVER_IP}:{SERVER_PORT}")
-
+def main():
+    global SERVER_IP, SERVER_PORT
     stop_event = threading.Event()
-    server_thread = threading.Thread(target = listen, args = (stop_event, SERVER_IP, SERVER_PORT), daemon = True)
-    server_thread.start()
+    server_thread = None
 
-    print("\nMenu:")
-    print("s) Stop server")
+    print("=== Server ===")
 
     while True:
+        print("\nMenu:")
+        print("1) Configure IP/PORT")
+        print("2) Start server")
+        print("3) Stop server")
+        print("4) Exit")
         cmd = input().strip().lower()
-        if cmd == "s":
-            stop_event.set()
-            server_thread.join()
+
+        if cmd == "1":
+            SERVER_IP = input(f"\nEnter server IP [{SERVER_IP}]: ").strip() or SERVER_IP
+            port_input = input(f"Enter server PORT [{SERVER_PORT}]: ").strip()
+            SERVER_PORT = int(port_input) if port_input else SERVER_PORT
+            print(f"Configuration set to {SERVER_IP}:{SERVER_PORT}")
+        elif cmd == "2":
+            if server_thread and server_thread.is_alive():
+                print("\nServer is already running")
+            else:
+                stop_event.clear()
+                server_thread = threading.Thread(target = listen, args = (stop_event, SERVER_IP, SERVER_PORT), daemon = True)
+                server_thread.start()
+                print(f"\nServer listening on {SERVER_IP}:{SERVER_PORT}")
+        elif cmd == "3":
+            if server_thread and server_thread.is_alive():
+                stop_event.set()
+                server_thread.join()
+                print("\nServer stopped")
+            else:
+                print("\nServer is not running")
+        elif cmd == "4":
+            if server_thread and server_thread.is_alive():
+                stop_event.set()
+                server_thread.join()
+            print("\nExiting...")
             break
+        else:
+            print("\nUnknown command")
+
+if __name__ == "__main__":
+    main()
