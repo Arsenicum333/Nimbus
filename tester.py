@@ -162,7 +162,7 @@ def send_corrupted():
 def main():
     global SERVER_IP, SERVER_PORT
 
-    print("=== FIITMeteo ===")
+    print("===== Tester =====")
 
     while True:
         print("\nMenu:")

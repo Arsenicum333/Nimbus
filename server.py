@@ -98,7 +98,7 @@ def main():
     stop_event = threading.Event()
     server_thread = None
 
-    print("=== Server ===")
+    print("===== Server =====")
 
     while True:
         print("\nMenu:")
