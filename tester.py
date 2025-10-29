@@ -80,10 +80,9 @@ def make_data(sensor_id, obj):
             corrupt_next.discard(sensor_id)
 
     if do_corrupt:
-        print(f"Sending corrupted packet for sensor {sensor_id}")
-        send_json(payload, corrupt=True)
+        send_json(payload, corrupt = True)
     else:
-        send_json(payload, corrupt=False)
+        send_json(payload, corrupt = False)
 
 sensors = {
     SensorID.THERMONODE.value: SensorManager(SensorID.THERMONODE.value, make_data),
