@@ -14,10 +14,16 @@ BUFFER_SIZE = 65535
 
 sensors = {} # sensor_id -> {"token": str, "addr": tuple}
 
+no_ack_mode = None
+no_ack_counter = 0
+no_ack_lock = threading.Lock()
+
 def send_json(sock, data, addr):
     sock.sendto(json.dumps(data).encode("utf-8"), addr)
 
 def handle_packet(sock, data, addr):
+    global no_ack_mode, no_ack_counter
+
     try:
         packet = json.loads(data.decode("utf-8"))
     except Exception:
@@ -68,6 +74,16 @@ def handle_packet(sock, data, addr):
     low_battery = bool(packet.get("low_battery"))
     print(format_data(sensor_id, timestamp, params, low_battery))
 
+    with no_ack_lock:
+        if no_ack_mode == sensor_id:
+            no_ack_counter += 1
+            print(f"[{sensor_id}] No ACK sent ({no_ack_counter}/3)")
+
+            if no_ack_counter >= 3:
+                no_ack_mode = None
+                no_ack_counter = 0
+            return
+
     confirmation = {
         "timestamp": int(time.time()),
         "sensor_id": sensor_id,
@@ -93,6 +109,27 @@ def listen(stop_event, server_ip, server_port):
     finally:
         sock.close()
 
+def set_no_ack_device():
+    global no_ack_mode, no_ack_counter
+
+    print("\nSelect device for no-ACK mode:")
+    from enums.SensorID import SensorID
+    for sensor in SensorID:
+        print(f"{sensor.value}) {sensor.name}")
+
+    try:
+        sensor_id = int(input("Enter sensor ID: "))
+        if sensor_id not in [s.value for s in SensorID]:
+            print("Invalid sensor ID")
+            return
+
+        with no_ack_lock:
+            no_ack_mode = sensor_id
+            no_ack_counter = 0
+        print(f"Device {sensor_id} set to no-ACK mode (will ignore 3 ACKs)")
+    except ValueError:
+        print("Invalid input")
+
 def main():
     global SERVER_IP, SERVER_PORT
     stop_event = threading.Event()
@@ -105,7 +142,8 @@ def main():
         print("1) Configure IP/PORT")
         print("2) Start server")
         print("3) Stop server")
-        print("4) Exit")
+        print("4) Set device to no-ACK mode")
+        print("5) Exit")
         cmd = input().strip().lower()
 
         if cmd == "1":
@@ -129,6 +167,8 @@ def main():
             else:
                 print("\nServer is not running")
         elif cmd == "4":
+            set_no_ack_device()
+        elif cmd == "5":
             if server_thread and server_thread.is_alive():
                 stop_event.set()
                 server_thread.join()

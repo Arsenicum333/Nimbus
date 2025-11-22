@@ -21,6 +21,9 @@ last_payloads = {}
 corrupt_next = set()
 state_lock = threading.Lock()
 
+pending_acks = {}  # sensor_id -> (payload, timestamp)
+pending_lock = threading.Lock()
+
 def send_json(data: dict, corrupt: bool = False, dest = None):
     data_copy = data.copy()
 
@@ -76,6 +79,7 @@ def make_data(sensor_id, obj):
     with state_lock:
         last_payloads[sensor_id] = payload.copy()
         do_corrupt = sensor_id in corrupt_next
+
         if do_corrupt:
             corrupt_next.discard(sensor_id)
 
@@ -83,6 +87,27 @@ def make_data(sensor_id, obj):
         send_json(payload, corrupt = True)
     else:
         send_json(payload, corrupt = False)
+
+    with pending_lock:
+        pending_acks[sensor_id] = (payload, time.time())
+
+def check_pending_acks():
+    while True:
+        time.sleep(1)
+
+        current_time = time.time()
+        retry_sensors = []
+
+        with state_lock:
+            for sensor_id, (payload, timestamp) in list(pending_acks.items()):
+                if current_time - timestamp >= 1.0:
+                    retry_sensors.append((sensor_id, payload))
+
+                    pending_acks[sensor_id] = (payload, current_time)
+
+        for sensor_id, payload in retry_sensors:
+            print(f"[{sensor_id}] No ACK received, retrying...")
+            send_json(payload, corrupt = False)
 
 sensors = {
     SensorID.THERMONODE.value: SensorManager(SensorID.THERMONODE.value, make_data),
@@ -104,12 +129,22 @@ def listen():
 
             if packet.get("type") == PacketType.REQUEST_RESEND.value:
                 sensorID = packet.get("sensor_id")
+                print(f"[{sensorID}] Resend request received")
 
                 with state_lock:
                     payload = last_payloads.get(sensorID)
 
                 if payload:
                     send_json(payload, corrupt = False)
+                    print(f"[{sensorID}] Resent message")
+
+            elif packet.get("type") == PacketType.DATA_RECEIVED.value:
+                sensor_id = packet.get("sensor_id")
+
+                with pending_lock:
+                    if sensor_id in pending_acks:
+                        del pending_acks[sensor_id]
+
         except socket.timeout:
             continue
         except Exception:
@@ -120,6 +155,7 @@ def start_all_sensors():
         register(sensor_id)
 
     threading.Thread(target = listen, daemon = True).start()
+    threading.Thread(target = check_pending_acks, daemon = True).start()
 
     for sensor in sensors.values():
         sensor.start()
