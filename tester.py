@@ -24,6 +24,10 @@ state_lock = threading.Lock()
 pending_acks = {}  # sensor_id -> (payload, timestamp)
 pending_lock = threading.Lock()
 
+simulated_disconnected = set()
+activity_check_counters = {}  # sensor_id -> count
+activity_lock = threading.Lock()
+
 def send_json(data: dict, corrupt: bool = False, dest = None):
     data_copy = data.copy()
 
@@ -74,6 +78,10 @@ def build_payload(sensor_id, obj):
     return payload
 
 def make_data(sensor_id, obj):
+    with activity_lock:
+        if sensor_id in simulated_disconnected:
+            return
+
     payload = build_payload(sensor_id, obj)
 
     with state_lock:
@@ -102,12 +110,27 @@ def check_pending_acks():
             for sensor_id, (payload, timestamp) in list(pending_acks.items()):
                 if current_time - timestamp >= 1.0:
                     retry_sensors.append((sensor_id, payload))
-
                     pending_acks[sensor_id] = (payload, current_time)
 
         for sensor_id, payload in retry_sensors:
             print(f"[{sensor_id}] No ACK received, retrying...")
             send_json(payload, corrupt = False)
+
+def send_activity_confirmation(sensor_id):
+    token = tokens.get(sensor_id)
+    if not token:
+        return
+
+    response = {
+        "timestamp": int(time.time()),
+        "sensor_id": sensor_id,
+        "type": PacketType.ACTIVITY_CONFIRMATION.value,
+        "token": token
+    }
+
+    response["checksum"] = compute_checksum(response)
+    send_json(response)
+    print(f"[{sensor_id}] Sent activity confirmation")
 
 sensors = {
     SensorID.THERMONODE.value: SensorManager(SensorID.THERMONODE.value, make_data),
@@ -121,7 +144,7 @@ def listen():
 
     while True:
         try:
-            data, _ = sock.recvfrom(BUFFER_SIZE)
+            data, addr = sock.recvfrom(BUFFER_SIZE)
             try:
                 packet = json.loads(data.decode())
             except Exception:
@@ -144,6 +167,23 @@ def listen():
                 with pending_lock:
                     if sensor_id in pending_acks:
                         del pending_acks[sensor_id]
+
+            elif packet.get("type") == PacketType.ACTIVITY_CHECK.value:
+                sensor_id = packet.get("sensor_id")
+
+                with activity_lock:
+                    if sensor_id in simulated_disconnected:
+                        count = activity_check_counters.get(sensor_id, 0) + 1
+                        activity_check_counters[sensor_id] = count
+                        print(f"[{sensor_id}] Received activity check ({count}/3)")
+
+                        if count >= 3:
+                            send_activity_confirmation(sensor_id)
+                            simulated_disconnected.discard(sensor_id)
+                            activity_check_counters[sensor_id] = 0
+                            print(f"[{sensor_id}] Reconnected and resumed normal operation")
+                    else:
+                        send_activity_confirmation(sensor_id)
 
         except socket.timeout:
             continue
@@ -174,6 +214,11 @@ def send_manual():
     except (ValueError, KeyError):
         print("Invalid selection")
         return
+
+    with activity_lock:
+        if sensor.value in simulated_disconnected:
+            return
+
     obj = manual_data(sensor)
     make_data(sensor.value, obj)
     print(f"Manual message for {sensor.name} sent")
@@ -183,7 +228,7 @@ def send_corrupted():
         print(f"{sensor.value}) {sensor.name}")
 
     try:
-        sensorID_value = int(input("Select sensor to corrupt next automatic packet ID (0–3): "))
+        sensorID_value = int(input("Select sensor ID to corrupt next automatic packet (0–3): "))
         if sensorID_value not in sensors:
             print("Invalid selection")
             return
@@ -193,6 +238,25 @@ def send_corrupted():
 
         print(f"Next automatic packet of sensor {sensorID_value} will be corrupted")
     except Exception:
+        print("Invalid input")
+
+def simulate_disconnection():
+    print("\nSelect device to simulate disconnection:")
+    for sensor in SensorID:
+        print(f"{sensor.value}) {sensor.name}")
+
+    try:
+        sensor_id = int(input("Enter sensor ID: "))
+        if sensor_id not in [s.value for s in SensorID]:
+            print("Invalid sensor ID")
+            return
+
+        with activity_lock:
+            simulated_disconnected.add(sensor_id)
+            activity_check_counters[sensor_id] = 0
+
+        print(f"Device {sensor_id} is now simulated as disconnected - messages will not be sent")
+    except ValueError:
         print("Invalid input")
 
 def main():
@@ -207,7 +271,8 @@ def main():
         print("3) Stop automatic data sending")
         print("4) Send manual message")
         print("5) Send corrupted next automatic packet")
-        print("6) Exit")
+        print("6) Simulate device disconnection")
+        print("7) Exit")
         cmd = input().strip().lower()
 
         if cmd == "1":
@@ -224,6 +289,8 @@ def main():
         elif cmd == "5":
             send_corrupted()
         elif cmd == "6":
+            simulate_disconnection()
+        elif cmd == "7":
             stop_all_sensors()
             print("\nExiting...")
             break
