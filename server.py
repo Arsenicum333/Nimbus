@@ -67,8 +67,21 @@ def handle_packet(sock, data, addr):
 
     update_sensor_activity(sensor_id, addr)
 
+    is_activity_confirmation = (token is not None and
+                               sensor_id is not None and
+                               all(key in ("timestamp", "sensor_id", "token", "checksum", "type")
+                                   for key in packet.keys()))
+
+    if is_activity_confirmation:
+        with activity_lock:
+            if sensor_id in sensors and sensors[sensor_id]["activity_checks_sent"] >= 3:
+                print(f"INFO: {sensor_id} RECONNECTED!")
+                sensors[sensor_id]["activity_checks_sent"] = 0
+                sensors[sensor_id]["disconnected_reported"] = 0
+        return
+
     if packet.get("checksum") != compute_checksum(packet):
-        print(f"INFO: {sensor_id} CORRUTPED DATA at {timestamp}. REQUESTING DATA")
+        print(f"INFO: {sensor_id} CORRUPTED DATA at {timestamp}. REQUESTING DATA")
 
         resend_request = {
             "timestamp": int(time.time()),
@@ -103,48 +116,45 @@ def handle_packet(sock, data, addr):
 
     if sensor_id not in sensors or sensors[sensor_id]["token"] != token:
         print(f"WARNING: Invalid token from sensor {sensor_id}")
-        return
 
-    packet_type = packet.get("type")
-
-    if packet_type == PacketType.ACTIVITY_CONFIRMATION.value:
-        with activity_lock:
-            if sensor_id in sensors and sensors[sensor_id]["activity_checks_sent"] >= 3:
-                print(f"INFO: {sensor_id} RECONNECTED!")
-                sensors[sensor_id]["activity_checks_sent"] = 0
-                sensors[sensor_id]["disconnected_reported"] = 0
-        return
-
-    elif packet_type is None:
-        update_sensor_activity(sensor_id, reset_counters = True)
-
-        params = {
-            key: value for key, value in packet.items()
-            if key not in ("timestamp", "sensor_id", "token", "checksum", "low_battery")
-        }
-
-        low_battery = bool(packet.get("low_battery"))
-        print(format_data(sensor_id, timestamp, params, low_battery))
-
-        with no_ack_lock:
-            if no_ack_mode == sensor_id:
-                no_ack_counter += 1
-                print(f"[{sensor_id}] No ACK sent ({no_ack_counter}/3)")
-
-                if no_ack_counter >= 3:
-                    no_ack_mode = None
-                    no_ack_counter = 0
-                return
-
-        confirmation = {
+        invalid_token_response = {
             "timestamp": int(time.time()),
             "sensor_id": sensor_id,
-            "type": PacketType.DATA_RECEIVED.value,
-            "checksum": None
+            "type": PacketType.INVALID_TOKEN.value
         }
+        invalid_token_response["checksum"] = compute_checksum(invalid_token_response)
+        send_json(sock, invalid_token_response, addr)
+        return
 
-        confirmation["checksum"] = compute_checksum(confirmation)
-        send_json(sock, confirmation, addr)
+    update_sensor_activity(sensor_id, reset_counters = True)
+
+    params = {
+        key: value for key, value in packet.items()
+        if key not in ("timestamp", "sensor_id", "token", "checksum", "low_battery", "type")
+    }
+
+    low_battery = bool(packet.get("low_battery"))
+    print(format_data(sensor_id, timestamp, params, low_battery))
+
+    with no_ack_lock:
+        if no_ack_mode == sensor_id:
+            no_ack_counter += 1
+            print(f"[{sensor_id}] No ACK sent ({no_ack_counter}/3)")
+
+            if no_ack_counter >= 3:
+                no_ack_mode = None
+                no_ack_counter = 0
+            return
+
+    confirmation = {
+        "timestamp": int(time.time()),
+        "sensor_id": sensor_id,
+        "type": PacketType.DATA_RECEIVED.value,
+        "checksum": None
+    }
+
+    confirmation["checksum"] = compute_checksum(confirmation)
+    send_json(sock, confirmation, addr)
 
 def monitor_sensors(stop_event, sock):
     while not stop_event.is_set():

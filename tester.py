@@ -64,11 +64,13 @@ def build_payload(sensor_id, obj):
         register(sensor_id)
         token = tokens.get(sensor_id)
 
+    low_battery_value = getattr(obj, "low_battery", False)
+
     payload = {
         "timestamp": int(time.time()),
         "sensor_id": sensor_id,
         "token": token,
-        "low_battery": int(getattr(obj, "low_battery", False)),
+        "low_battery": int(low_battery_value),
     }
 
     for key, value in vars(obj).items():
@@ -144,7 +146,7 @@ def listen():
 
     while True:
         try:
-            data, addr = sock.recvfrom(BUFFER_SIZE)
+            data, _ = sock.recvfrom(BUFFER_SIZE)
             try:
                 packet = json.loads(data.decode())
             except Exception:
@@ -158,7 +160,7 @@ def listen():
                     payload = last_payloads.get(sensorID)
 
                 if payload:
-                    send_json(payload, corrupt = False)
+                    send_json(payload, corrupt=False)
                     print(f"[{sensorID}] Resent message")
 
             elif packet.get("type") == PacketType.DATA_RECEIVED.value:
@@ -178,12 +180,39 @@ def listen():
                         print(f"[{sensor_id}] Received activity check ({count}/3)")
 
                         if count >= 3:
-                            send_activity_confirmation(sensor_id)
+                            token = tokens.get(sensor_id)
+
+                            if token:
+                                response = {
+                                    "timestamp": int(time.time()),
+                                    "sensor_id": sensor_id,
+                                    "token": token
+                                }
+                                response["checksum"] = compute_checksum(response)
+                                send_json(response)
+                                print(f"[{sensor_id}] Sent activity confirmation")
+
                             simulated_disconnected.discard(sensor_id)
                             activity_check_counters[sensor_id] = 0
                             print(f"[{sensor_id}] Reconnected and resumed normal operation")
                     else:
-                        send_activity_confirmation(sensor_id)
+                        token = tokens.get(sensor_id)
+                        if token:
+                            response = {
+                                "timestamp": int(time.time()),
+                                "sensor_id": sensor_id,
+                                "token": token
+                            }
+                            response["checksum"] = compute_checksum(response)
+                            send_json(response)
+                            print(f"[{sensor_id}] Sent activity confirmation")
+
+            elif packet.get("type") == PacketType.INVALID_TOKEN.value:
+                sensor_id = packet.get("sensor_id")
+                print(f"[{sensor_id}] Received INVALID_TOKEN - re-registering")
+                if sensor_id in tokens:
+                    del tokens[sensor_id]
+                register(sensor_id)
 
         except socket.timeout:
             continue
