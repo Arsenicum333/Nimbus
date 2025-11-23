@@ -187,6 +187,9 @@ def listen(stop_event, server_ip, server_port):
     sock.bind((server_ip, server_port))
     sock.settimeout(1.0)
 
+    monitor_thread = threading.Thread(target = monitor_sensors, args = (stop_event, sock), daemon = True)
+    monitor_thread.start()
+
     try:
         while not stop_event.is_set():
             try:
@@ -222,7 +225,6 @@ def main():
     global SERVER_IP, SERVER_PORT
     stop_event = threading.Event()
     server_thread = None
-    monitor_thread = None
 
     print("===== Server =====")
 
@@ -246,17 +248,12 @@ def main():
             else:
                 stop_event.clear()
                 server_thread = threading.Thread(target = listen, args = (stop_event, SERVER_IP, SERVER_PORT), daemon = True)
-                monitor_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-                monitor_thread = threading.Thread(target = monitor_sensors, args = (stop_event, monitor_sock), daemon = True)
                 server_thread.start()
-                monitor_thread.start()
                 print(f"\nServer listening on {SERVER_IP}:{SERVER_PORT}")
         elif cmd == "3":
             if server_thread and server_thread.is_alive():
                 stop_event.set()
                 server_thread.join()
-                if monitor_thread:
-                    monitor_thread.join()
                 print("\nServer stopped")
             else:
                 print("\nServer is not running")
@@ -266,8 +263,6 @@ def main():
             if server_thread and server_thread.is_alive():
                 stop_event.set()
                 server_thread.join()
-                if monitor_thread:
-                    monitor_thread.join()
             print("\nExiting...")
             break
         else:
