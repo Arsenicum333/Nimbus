@@ -295,7 +295,7 @@ def parse_binary_packet(data: bytes):
             if result:
                 return ('REGISTRATION_RESPONSE', result)
 
-        elif packet_type in [PacketType.DATA_RECEIVED, PacketType.REQUEST_RESEND, 
+        elif packet_type in [PacketType.DATA_RECEIVED, PacketType.REQUEST_RESEND,
                            PacketType.INVALID_TOKEN, PacketType.ACTIVITY_CHECK] and len(data) == 9:
             result = unpack_server_packet(data)
             if result:

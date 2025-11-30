@@ -50,6 +50,19 @@ def handle_packet(sock, data, addr):
         result = parse_binary_packet(data)
         if not result:
             print(f"WARNING: Failed to decode packet from {addr}")
+
+            if len(data) > 0:
+                try:
+                    first_byte = data[0]
+                    packet_type = (first_byte >> 5) & 0x7
+                    sensor_id = (first_byte >> 3) & 0x3
+
+                    if packet_type == PacketType.DATA.value:
+                        print(f"INFO: {sensor_id} CORRUPTED DATA. REQUESTING RESEND")
+                        response = pack_server_packet(PacketType.REQUEST_RESEND, sensor_id, int(time.time()))
+                        send_binary(sock, response, addr)
+                except:
+                    print(f"WARNING: Could not extract sensor_id from corrupted packet")
             return
 
         packet_type, packet_data = result
@@ -118,7 +131,7 @@ def handle_packet(sock, data, addr):
 def monitor_sensors(stop_event, sock):
     while not stop_event.is_set():
         try:
-            time.sleep(1)
+            time.sleep(0.5)
             current_time = time.time()
 
             with sensors_lock:
@@ -131,27 +144,31 @@ def monitor_sensors(stop_event, sock):
                     if sensor_info["activity_checks_sent"] == 0:
                         send_activity_check(sock, sensor_id, sensor_info["addr"])
                         sensor_info["activity_checks_sent"] = 1
-                        sensor_info["last_check_time"] = current_time
+                        sensor_info["last_activity_check_time"] = current_time
+                        print(f"WARNING: {sensor_id} DISCONNECTED!")
+                        sensor_info["disconnected"] = True
 
                     elif sensor_info["activity_checks_sent"] < 10:
-                        time_since_last_check = current_time - sensor_info["last_check_time"]
+                        time_since_last_check = current_time - sensor_info["last_activity_check_time"]
 
-                        if sensor_info["activity_checks_sent"] == 1 and time_since_last_check >= 1.0:
-                            if not sensor_info.get("disconnected", False):
-                                print(f"WARNING: {sensor_id} DISCONNECTED!")
-                                sensor_info["disconnected"] = True
-
+                        if sensor_info["activity_checks_sent"] == 1 and time_since_last_check >= 5.0:
+                            send_activity_check(sock, sensor_id, sensor_info["addr"])
                             sensor_info["activity_checks_sent"] = 2
-                            sensor_info["last_check_time"] = current_time
+                            sensor_info["last_activity_check_time"] = current_time
+                            print(f"WARNING: {sensor_id} DISCONNECTED!")
 
                         elif sensor_info["activity_checks_sent"] >= 2 and time_since_last_check >= 5.0:
                             send_activity_check(sock, sensor_id, sensor_info["addr"])
                             sensor_info["activity_checks_sent"] += 1
-                            sensor_info["last_check_time"] = current_time
+                            sensor_info["last_activity_check_time"] = current_time
 
                 else:
                     if sensor_info["activity_checks_sent"] > 0:
+                        was_disconnected = sensor_info.get("disconnected", False)
                         sensor_info["activity_checks_sent"] = 0
+                        if was_disconnected:
+                            print(f"INFO: {sensor_id} RECONNECTED!")
+                        sensor_info["disconnected"] = False
 
         except Exception as e:
             print(f"ERROR: Monitoring sensors: {e}")

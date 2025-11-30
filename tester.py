@@ -18,11 +18,15 @@ tokens = {}
 last_payloads = {}
 corrupt_next = set()
 simulated_disconnected = set()
+activity_check_counters = {}
 
 tokens_lock = threading.Lock()
 payloads_lock = threading.Lock()
 corrupt_lock = threading.Lock()
 disconnect_lock = threading.Lock()
+
+pending_acks = {}  # sensor_id -> (original_packet_bytes, original_timestamp, retry_count)
+pending_acks_lock = threading.Lock()
 
 server_address = (SERVER_IP, SERVER_PORT)
 
@@ -91,19 +95,55 @@ def make_data(sensor_id, obj):
             should_corrupt = sensor_id in corrupt_next
             if should_corrupt:
                 corrupt_next.discard(sensor_id)
+                print(f"INFO: [{sensor_id}] Corruption flag set - will corrupt this packet")
 
         packet = pack_data(sensor_id, token, timestamp, low_battery, sensor_data)
 
         if should_corrupt:
-            corrupted_packet = packet[:-4] + bytes([(packet[-4] + 1) % 256]) + packet[-3:]
+            corrupted_packet = packet[:-4] + b'\x00\x00\x00\x01'
             send_binary(sock, corrupted_packet, server_address)
-            print(f"INFO: [{sensor_id}] Sent corrupted data")
+            print(f"INFO: [{sensor_id}] Sent CORRUPTED data (checksum set to 1)")
+
         else:
             send_binary(sock, packet, server_address)
             print(f"INFO: [{sensor_id}] Sent data")
 
+            with pending_acks_lock:
+                pending_acks[sensor_id] = {
+                    'packet': packet,
+                    'last_sent_time': time.time(),
+                    'retry_count': 0,
+                    'original_timestamp': timestamp
+                }
+
     except Exception as e:
         print(f"ERROR: [{sensor_id}] Failed to send data: {e}")
+
+def check_pending_acks():
+    while True:
+        time.sleep(1)
+        current_time = time.time()
+        retry_list = []
+
+        with pending_acks_lock:
+            for sensor_id, ack_info in list(pending_acks.items()):
+                if current_time - ack_info['last_sent_time'] >= 1.0 and ack_info['retry_count'] < 10:
+                    retry_list.append((sensor_id, ack_info))
+
+        for sensor_id, ack_info in retry_list:
+            send_binary(sock, ack_info['packet'], server_address)
+            print(f"INFO: [{sensor_id}] Retry sending data (no ACK received, attempt {ack_info['retry_count'] + 1})")
+
+            with pending_acks_lock:
+                if sensor_id in pending_acks:
+                    pending_acks[sensor_id]['last_sent_time'] = current_time
+                    pending_acks[sensor_id]['retry_count'] += 1
+
+        with pending_acks_lock:
+            for sensor_id, ack_info in list(pending_acks.items()):
+                if ack_info['retry_count'] >= 10:
+                    del pending_acks[sensor_id]
+                    print(f"WARNING: [{sensor_id}] Max retry attempts reached")
 
 def handle_server_messages():
     sock.settimeout(1.0)
@@ -127,12 +167,16 @@ def handle_server_messages():
 
                 if payload:
                     sensor_id, token, timestamp, low_battery, sensor_data = payload
+
                     packet = pack_data(sensor_id, token, timestamp, low_battery, sensor_data)
                     send_binary(sock, packet, server_address)
                     print(f"INFO: [{sensor_id}] Data resent")
 
             elif packet_type == 'DATA_RECEIVED':
                 sensor_id, timestamp = packet_data
+                with pending_acks_lock:
+                    if sensor_id in pending_acks:
+                        del pending_acks[sensor_id]
                 print(f"INFO: [{sensor_id}] Data acknowledged by server")
 
             elif packet_type == 'ACTIVITY_CHECK':
@@ -141,8 +185,8 @@ def handle_server_messages():
 
                 with disconnect_lock:
                     if sensor_id in simulated_disconnected:
-                        activity_count = simulated_disconnected.get(sensor_id, 0) + 1
-                        simulated_disconnected[sensor_id] = activity_count
+                        activity_count = activity_check_counters.get(sensor_id, 0) + 1
+                        activity_check_counters[sensor_id] = activity_count
 
                         if activity_count >= 3:
                             with tokens_lock:
@@ -150,7 +194,8 @@ def handle_server_messages():
                             if token:
                                 packet = pack_activity_confirmation(sensor_id, token, int(time.time()), False)
                                 send_binary(sock, packet, server_address)
-                                simulated_disconnected[sensor_id] = 0
+                                simulated_disconnected.discard(sensor_id)
+                                activity_check_counters[sensor_id] = 0
                                 print(f"INFO: [{sensor_id}] Reconnected after 3 activity checks")
                         else:
                             print(f"INFO: [{sensor_id}] Ignoring activity check ({activity_count}/3)")
@@ -182,6 +227,7 @@ def start_all_sensors():
             register(sensor_id)
 
         threading.Thread(target = handle_server_messages, daemon = True).start()
+        threading.Thread(target = check_pending_acks, daemon = True).start()
 
         for sensor in sensors.values():
             sensor.start()
@@ -194,6 +240,10 @@ def start_all_sensors():
 def stop_all_sensors():
     for sensor in sensors.values():
         sensor.stop()
+
+    with pending_acks_lock:
+        pending_acks.clear()
+
     print("INFO: All sensors stopped")
 
 def send_manual_message():
@@ -246,7 +296,8 @@ def simulate_disconnection():
             return
 
         with disconnect_lock:
-            simulated_disconnected[sensor_id] = 0
+            simulated_disconnected.add(sensor_id)
+            activity_check_counters[sensor_id] = 0
 
         print(f"INFO: Sensor {sensor_id} simulated as disconnected")
         print("INFO: It will respond to activity checks after 3 attempts")
@@ -290,7 +341,7 @@ def main():
         elif cmd == "4":
             send_manual_message()
         elif cmd == "5":
-            send_manual_message()
+            corrupt_next_packet()
         elif cmd == "6":
             simulate_disconnection()
         elif cmd == "7":
