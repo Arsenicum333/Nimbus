@@ -1,210 +1,176 @@
 import random
 import socket
-import json
 import time
 import threading
 
 from enums.PacketType import PacketType
-from utils.Checksum import compute_checksum
+from utils.BinaryProtocol import *
 from utils.FormatData import format_data
 
 SERVER_IP = "0.0.0.0"
 SERVER_PORT = 5005
-BUFFER_SIZE = 65535
+BUFFER_SIZE = 1024
 
 sensors = {} # sensor_id -> {"token": str, "addr": tuple}
 
+sensors_lock = threading.Lock()
 no_ack_mode = None
 no_ack_counter = 0
 no_ack_lock = threading.Lock()
 
-activity_lock = threading.Lock()
-
-def send_json(sock, data, addr):
-    sock.sendto(json.dumps(data).encode("utf-8"), addr)
-
-def update_sensor_activity(sensor_id, addr = None, reset_counters = False):
-    with activity_lock:
+def update_sensor_activity(sensor_id, addr = None, token = None):
+    with sensors_lock:
         if sensor_id in sensors:
             sensors[sensor_id]["last_seen"] = time.time()
-
-            if reset_counters:
-                sensors[sensor_id]["activity_checks_sent"] = 0
-                sensors[sensor_id]["disconnected_reported"] = 0
-        elif addr is not None:
-            token = random.getrandbits(32)
+            if token is not None:
+                sensors[sensor_id]["token"] = token
+            if addr is not None:
+                sensors[sensor_id]["addr"] = addr
+        elif addr is not None and token is not None:
             sensors[sensor_id] = {
                 "token": token,
                 "addr": addr,
                 "last_seen": time.time(),
                 "activity_checks_sent": 0,
-                "disconnected_reported": 0
+                "disconnected": False
             }
 
 def send_activity_check(sock, sensor_id, addr):
-    request = {
-        "timestamp": int(time.time()),
-        "sensor_id": sensor_id,
-        "type": PacketType.ACTIVITY_CHECK.value
-    }
-
-    request["checksum"] = compute_checksum(request)
-    send_json(sock, request, addr)
-    print(f"[{sensor_id}] Sent activity check")
+    try:
+        packet = pack_server_packet(PacketType.ACTIVITY_CHECK, sensor_id, int(time.time()))
+        send_binary(sock, packet, addr)
+        print(f"INFO: Activity check sent to {sensor_id}")
+    except Exception as e:
+        print(f"ERROR: Failed to send activity check to {sensor_id}: {e}")
 
 def handle_packet(sock, data, addr):
     global no_ack_mode, no_ack_counter
 
     try:
-        packet = json.loads(data.decode("utf-8"))
-    except Exception:
-        print(f"WARNING: Failed to decode packet from {addr}")
-        return
-
-    sensor_id = packet.get("sensor_id")
-    token = packet.get("token")
-    timestamp = packet.get("timestamp", int(time.time()))
-
-    update_sensor_activity(sensor_id, addr)
-
-    is_activity_confirmation = (token is not None and
-                               sensor_id is not None and
-                               all(key in ("timestamp", "sensor_id", "token", "checksum", "type")
-                                   for key in packet.keys()))
-
-    if is_activity_confirmation:
-        with activity_lock:
-            if sensor_id in sensors and sensors[sensor_id]["activity_checks_sent"] >= 3:
-                print(f"INFO: {sensor_id} RECONNECTED!")
-                sensors[sensor_id]["activity_checks_sent"] = 0
-                sensors[sensor_id]["disconnected_reported"] = 0
-        return
-
-    if packet.get("checksum") != compute_checksum(packet):
-        print(f"INFO: {sensor_id} CORRUPTED DATA at {timestamp}. REQUESTING DATA")
-
-        resend_request = {
-            "timestamp": int(time.time()),
-            "sensor_id": sensor_id,
-            "type": PacketType.REQUEST_RESEND.value
-        }
-
-        resend_request["checksum"] = compute_checksum(resend_request)
-        send_json(sock, resend_request, addr)
-        return
-
-    if not token:
-        token = random.getrandbits(32)
-        sensors[sensor_id] = {
-            "token": token,
-            "addr": addr,
-            "last_seen": time.time(),
-            "activity_checks_sent": 0,
-            "disconnected_reported": 0
-        }
-        print(f"INFO: {sensor_id} REGISTERED at {timestamp}")
-
-        response = {
-            "timestamp": int(time.time()),
-            "sensor_id": sensor_id,
-            "token": token,
-        }
-
-        response["checksum"] = compute_checksum(response)
-        sock.sendto(json.dumps(response).encode(), addr)
-        return
-
-    if sensor_id not in sensors or sensors[sensor_id]["token"] != token:
-        print(f"WARNING: Invalid token from sensor {sensor_id}")
-
-        invalid_token_response = {
-            "timestamp": int(time.time()),
-            "sensor_id": sensor_id,
-            "type": PacketType.INVALID_TOKEN.value
-        }
-        invalid_token_response["checksum"] = compute_checksum(invalid_token_response)
-        send_json(sock, invalid_token_response, addr)
-        return
-
-    update_sensor_activity(sensor_id, reset_counters = True)
-
-    params = {
-        key: value for key, value in packet.items()
-        if key not in ("timestamp", "sensor_id", "token", "checksum", "low_battery", "type")
-    }
-
-    low_battery = bool(packet.get("low_battery"))
-    print(format_data(sensor_id, timestamp, params, low_battery))
-
-    with no_ack_lock:
-        if no_ack_mode == sensor_id:
-            no_ack_counter += 1
-            print(f"[{sensor_id}] No ACK sent ({no_ack_counter}/3)")
-
-            if no_ack_counter >= 3:
-                no_ack_mode = None
-                no_ack_counter = 0
+        result = parse_binary_packet(data)
+        if not result:
+            print(f"WARNING: Failed to decode packet from {addr}")
             return
 
-    confirmation = {
-        "timestamp": int(time.time()),
-        "sensor_id": sensor_id,
-        "type": PacketType.DATA_RECEIVED.value,
-        "checksum": None
-    }
+        packet_type, packet_data = result
 
-    confirmation["checksum"] = compute_checksum(confirmation)
-    send_json(sock, confirmation, addr)
+        if packet_type == 'REGISTRATION':
+            sensor_id, timestamp, low_battery = packet_data
+            print(f"INFO: {sensor_id} REGISTERED at {timestamp}")
+
+            token = random.getrandbits(32)
+            update_sensor_activity(sensor_id, addr, token)
+
+            response = pack_registration_response(sensor_id, token, int(time.time()))
+            send_binary(sock, response, addr)
+
+        elif packet_type == 'DATA':
+            sensor_id, token, timestamp, low_battery, sensor_data = packet_data
+
+            with sensors_lock:
+                sensor_info = sensors.get(sensor_id)
+                if not sensor_info or sensor_info["token"] != token:
+                    print(f"WARNING: Invalid token from sensor {sensor_id}")
+                    response = pack_server_packet(PacketType.INVALID_TOKEN, sensor_id, int(time.time()))
+                    send_binary(sock, response, addr)
+                    return
+
+            update_sensor_activity(sensor_id)
+
+            with sensors_lock:
+                if sensors[sensor_id].get("disconnected", False):
+                    print(f"INFO: {sensor_id} RECONNECTED!")
+                    sensors[sensor_id]["disconnected"] = False
+                    sensors[sensor_id]["activity_checks_sent"] = 0
+
+            print(format_data(sensor_id, timestamp, sensor_data, low_battery))
+
+            with no_ack_lock:
+                if no_ack_mode == sensor_id:
+                    no_ack_counter += 1
+                    print(f"INFO: {sensor_id} no-ACK mode - counter: {no_ack_counter}/3")
+                    if no_ack_counter >= 3:
+                        no_ack_mode = None
+                        no_ack_counter = 0
+                        print(f"INFO: {sensor_id} no-ACK mode disabled")
+                    return
+
+            response = pack_server_packet(PacketType.DATA_RECEIVED, sensor_id, int(time.time()))
+            send_binary(sock, response, addr)
+
+        elif packet_type == 'ACTIVITY_CONFIRMATION':
+            sensor_id, token, timestamp, low_battery = packet_data
+
+            update_sensor_activity(sensor_id)
+
+            with sensors_lock:
+                if sensors[sensor_id].get("disconnected", False):
+                    print(f"INFO: {sensor_id} RECONNECTED!")
+                    sensors[sensor_id]["disconnected"] = False
+                    sensors[sensor_id]["activity_checks_sent"] = 0
+
+        elif packet_type in ['DATA_RECEIVED', 'REQUEST_RESEND', 'INVALID_TOKEN', 'ACTIVITY_CHECK']:
+            print(f"WARNING: Received server packet {packet_type} from client")
+
+    except Exception as e:
+        print(f"ERROR: Handling packet from {addr}: {e}")
 
 def monitor_sensors(stop_event, sock):
     while not stop_event.is_set():
-        time.sleep(1)
-        current_time = time.time()
+        try:
+            time.sleep(1)
+            current_time = time.time()
 
-        with activity_lock:
-            sensors_to_check = list(sensors.items())
+            with sensors_lock:
+                sensors_to_check = list(sensors.items())
 
-        for sensor_id, sensor_info in sensors_to_check:
-            time_since_last_seen = current_time - sensor_info["last_seen"]
+            for sensor_id, sensor_info in sensors_to_check:
+                time_since_last_seen = current_time - sensor_info["last_seen"]
 
-            if time_since_last_seen > 15:
-                if sensor_info["activity_checks_sent"] == 0:
-                    send_activity_check(sock, sensor_id, sensor_info["addr"])
-                    sensor_info["activity_checks_sent"] = 1
-                    sensor_info["last_activity_check_time"] = current_time
-                    print(f"WARNING: {sensor_id} DISCONNECTED!")
-                    sensor_info["disconnected_reported"] = 1
-
-                elif sensor_info["activity_checks_sent"] < 10:
-                    time_since_last_check = current_time - sensor_info["last_activity_check_time"]
-
-                    if time_since_last_check > 5:
+                if time_since_last_seen > 15:
+                    if sensor_info["activity_checks_sent"] == 0:
                         send_activity_check(sock, sensor_id, sensor_info["addr"])
-                        sensor_info["activity_checks_sent"] += 1
-                        sensor_info["last_activity_check_time"] = current_time
+                        sensor_info["activity_checks_sent"] = 1
+                        sensor_info["last_check_time"] = current_time
 
-                        if sensor_info["activity_checks_sent"] == 2 and sensor_info["disconnected_reported"] < 2:
-                            print(f"WARNING: {sensor_id} DISCONNECTED!")
-                            sensor_info["disconnected_reported"] = 2
+                    elif sensor_info["activity_checks_sent"] < 10:
+                        time_since_last_check = current_time - sensor_info["last_check_time"]
 
-            else:
-                if sensor_info["activity_checks_sent"] > 0:
-                    sensor_info["activity_checks_sent"] = 0
-                    sensor_info["disconnected_reported"] = 0
+                        if sensor_info["activity_checks_sent"] == 1 and time_since_last_check >= 1.0:
+                            if not sensor_info.get("disconnected", False):
+                                print(f"WARNING: {sensor_id} DISCONNECTED!")
+                                sensor_info["disconnected"] = True
+
+                            sensor_info["activity_checks_sent"] = 2
+                            sensor_info["last_check_time"] = current_time
+
+                        elif sensor_info["activity_checks_sent"] >= 2 and time_since_last_check >= 5.0:
+                            send_activity_check(sock, sensor_id, sensor_info["addr"])
+                            sensor_info["activity_checks_sent"] += 1
+                            sensor_info["last_check_time"] = current_time
+
+                else:
+                    if sensor_info["activity_checks_sent"] > 0:
+                        sensor_info["activity_checks_sent"] = 0
+
+        except Exception as e:
+            print(f"ERROR: Monitoring sensors: {e}")
 
 def listen(stop_event, server_ip, server_port):
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     sock.bind((server_ip, server_port))
     sock.settimeout(1.0)
 
-    monitor_thread = threading.Thread(target = monitor_sensors, args = (stop_event, sock), daemon = True)
+    monitor_thread = threading.Thread(target=monitor_sensors, args=(stop_event, sock), daemon=True)
     monitor_thread.start()
+
+    print(f"INFO: Server listening on {server_ip}:{server_port}")
 
     try:
         while not stop_event.is_set():
             try:
                 data, addr = sock.recvfrom(BUFFER_SIZE)
-                threading.Thread(target = handle_packet, args = (sock, data, addr), daemon = True).start()
+                threading.Thread(target=handle_packet, args=(sock, data, addr), daemon=True).start()
             except socket.timeout:
                 continue
     finally:
@@ -221,15 +187,16 @@ def set_no_ack_device():
     try:
         sensor_id = int(input("Enter sensor ID: "))
         if sensor_id not in [s.value for s in SensorID]:
-            print("Invalid sensor ID")
+            print("ERROR: Invalid sensor ID")
             return
 
         with no_ack_lock:
             no_ack_mode = sensor_id
             no_ack_counter = 0
-        print(f"Device {sensor_id} set to no-ACK mode (will ignore 3 ACKs)")
+
+        print(f"INFO: Device {sensor_id} set to no-ACK mode (will ignore 3 ACKs)")
     except ValueError:
-        print("Invalid input")
+        print("ERROR: Invalid input")
 
 def main():
     global SERVER_IP, SERVER_PORT
