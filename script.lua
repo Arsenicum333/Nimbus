@@ -22,7 +22,6 @@ f.sensor_id = ProtoField.uint8("fiit.sensor_id", "Sensor ID", base.DEC, {
 }, 0x18)
 
 f.low_battery = ProtoField.bool("fiit.low_battery", "Low Battery", 8, nil, 0x04)
-f.reserved_bit = ProtoField.bool("fiit.reserved", "Reserved", 8, nil, 0x01)
 f.timestamp = ProtoField.uint32("fiit.timestamp", "Timestamp", base.DEC)
 f.token = ProtoField.uint32("fiit.token", "Token", base.DEC)
 f.checksum = ProtoField.uint32("fiit.checksum", "Checksum", base.DEC)
@@ -48,8 +47,6 @@ function fiit_meteo_proto.dissector(buffer, pinfo, tree)
     if packet_type == 0 or packet_type == 1 or packet_type == 2 then
         subtree:add(f.low_battery, buffer(0,1))
     end
-
-    subtree:add(f.reserved_bit, buffer(0,1))
 
     local packet_type_str = "UNKNOWN"
     local sensor_type_str = "UNKNOWN"
