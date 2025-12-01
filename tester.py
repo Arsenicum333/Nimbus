@@ -32,7 +32,6 @@ server_address = (SERVER_IP, SERVER_PORT)
 
 def register(sensor_id):
     try:
-        print(f"INFO: [{sensor_id}] Registering with server...")
         packet = pack_registration(sensor_id, int(time.time()), False)
         send_binary(sock, packet, server_address)
 
@@ -222,7 +221,6 @@ def handle_server_messages():
 
 def start_all_sensors():
     try:
-        print("INFO: Registering sensors...")
         for sensor_id in sensors.keys():
             register(sensor_id)
 
@@ -231,8 +229,6 @@ def start_all_sensors():
 
         for sensor in sensors.values():
             sensor.start()
-
-        print("INFO: All sensors started successfully")
 
     except Exception as e:
         print(f"ERROR: Starting sensors: {e}")
@@ -300,7 +296,6 @@ def simulate_disconnection():
             activity_check_counters[sensor_id] = 0
 
         print(f"INFO: Sensor {sensor_id} simulated as disconnected")
-        print("INFO: It will respond to activity checks after 3 attempts")
 
     except ValueError:
         print("ERROR: Invalid input")
@@ -333,7 +328,7 @@ def main():
             port_input = input(f"Enter server PORT [{SERVER_PORT}]: ").strip()
             SERVER_PORT = int(port_input) if port_input else SERVER_PORT
             server_address = (SERVER_IP, SERVER_PORT)
-            print(f"Configuration set to {SERVER_IP}:{SERVER_PORT}")
+            print(f"\nConfiguration set to {SERVER_IP}:{SERVER_PORT}")
         elif cmd == "2":
             start_all_sensors()
         elif cmd == "3":

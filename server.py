@@ -122,9 +122,6 @@ def handle_packet(sock, data, addr):
                     sensors[sensor_id]["disconnected"] = False
                     sensors[sensor_id]["activity_checks_sent"] = 0
 
-        elif packet_type in ['DATA_RECEIVED', 'REQUEST_RESEND', 'INVALID_TOKEN', 'ACTIVITY_CHECK']:
-            print(f"WARNING: Received server packet {packet_type} from client")
-
     except Exception as e:
         print(f"ERROR: Handling packet from {addr}: {e}")
 
@@ -181,8 +178,6 @@ def listen(stop_event, server_ip, server_port):
     monitor_thread = threading.Thread(target=monitor_sensors, args=(stop_event, sock), daemon=True)
     monitor_thread.start()
 
-    print(f"INFO: Server listening on {server_ip}:{server_port}")
-
     try:
         while not stop_event.is_set():
             try:
@@ -235,7 +230,7 @@ def main():
             SERVER_IP = input(f"\nEnter server IP [{SERVER_IP}]: ").strip() or SERVER_IP
             port_input = input(f"Enter server PORT [{SERVER_PORT}]: ").strip()
             SERVER_PORT = int(port_input) if port_input else SERVER_PORT
-            print(f"Configuration set to {SERVER_IP}:{SERVER_PORT}")
+            print(f"\nConfiguration set to {SERVER_IP}:{SERVER_PORT}")
         elif cmd == "2":
             if server_thread and server_thread.is_alive():
                 print("\nServer is already running")
