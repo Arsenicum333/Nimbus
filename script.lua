@@ -70,7 +70,7 @@ function fiit_meteo_proto.dissector(buffer, pinfo, tree)
         battery_info = " [LOW_BATTERY]"
     end
 
-    pinfo.cols.info:set(string.format("%s - %s%s", packet_type_str, sensor_type_str, battery_info))
+    pinfo.cols.info:set(string.format("%s - %s%s [Len=%d]", packet_type_str, sensor_type_str, battery_info, length))
 
     local offset = 1
 
