@@ -1,6 +1,6 @@
 from enums.SensorID import SensorID
 
-def get_float(prompt, min_val, max_val, decimals=1):
+def get_float(prompt, min_val, max_val, decimals = 1):
     while True:
         try:
             value = round(float(input(prompt)), decimals)
@@ -24,9 +24,9 @@ def get_int(prompt, min_val, max_val):
 
 def get_yes_no(prompt):
     while True:
-        val = input(prompt).lower()
-        if val in ("y", "n"):
-            return val == "y"
+        value = input(prompt).lower()
+        if value in ("y", "n"):
+            return value == "y"
         print("Invalid input")
 
 def manual_data(sensor):

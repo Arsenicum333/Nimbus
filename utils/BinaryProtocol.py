@@ -131,7 +131,7 @@ def unpack_registration(data: bytes) -> Optional[Tuple[int, int, bool]]:
 
     return sensor_id, timestamp, low_battery
 
-def pack_data(sensor_id: int, token: int, timestamp: int, low_battery: bool, 
+def pack_data(sensor_id: int, token: int, timestamp: int, low_battery: bool,
               sensor_data: Dict[str, Any]) -> bytes:
     header_byte = (PacketType.DATA.value << 5) | (sensor_id << 3) | (int(low_battery) << 2)
     header = struct.pack('>B I I', header_byte, token, timestamp)

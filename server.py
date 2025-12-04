@@ -11,7 +11,7 @@ SERVER_IP = "0.0.0.0"
 SERVER_PORT = 5005
 BUFFER_SIZE = 1024
 
-sensors = {} # sensor_id -> {"token": str, "addr": tuple}
+sensors = {}
 
 sensors_lock = threading.Lock()
 no_ack_mode = None
@@ -175,14 +175,14 @@ def listen(stop_event, server_ip, server_port):
     sock.bind((server_ip, server_port))
     sock.settimeout(1.0)
 
-    monitor_thread = threading.Thread(target=monitor_sensors, args=(stop_event, sock), daemon=True)
+    monitor_thread = threading.Thread(target = monitor_sensors, args = (stop_event, sock), daemon = True)
     monitor_thread.start()
 
     try:
         while not stop_event.is_set():
             try:
                 data, addr = sock.recvfrom(BUFFER_SIZE)
-                threading.Thread(target=handle_packet, args=(sock, data, addr), daemon=True).start()
+                threading.Thread(target = handle_packet, args = (sock, data, addr), daemon = True).start()
             except socket.timeout:
                 continue
     finally:

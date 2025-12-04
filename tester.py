@@ -25,7 +25,7 @@ payloads_lock = threading.Lock()
 corrupt_lock = threading.Lock()
 disconnect_lock = threading.Lock()
 
-pending_acks = {}  # sensor_id -> (original_packet_bytes, original_timestamp, retry_count)
+pending_acks = {}
 pending_acks_lock = threading.Lock()
 
 server_address = (SERVER_IP, SERVER_PORT)
