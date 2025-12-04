@@ -18,6 +18,9 @@ no_ack_mode = None
 no_ack_counter = 0
 no_ack_lock = threading.Lock()
 
+lb_counter = 0
+lb_lock = threading.Lock()
+
 def update_sensor_activity(sensor_id, addr = None, token = None):
     with sensors_lock:
         if sensor_id in sensors:
@@ -44,7 +47,7 @@ def send_activity_check(sock, sensor_id, addr):
         print(f"ERROR: Failed to send activity check to {sensor_id}: {e}")
 
 def handle_packet(sock, data, addr):
-    global no_ack_mode, no_ack_counter
+    global no_ack_mode, no_ack_counter, lb_counter
 
     try:
         result = parse_binary_packet(data)
@@ -79,6 +82,11 @@ def handle_packet(sock, data, addr):
 
         elif packet_type == 'DATA':
             sensor_id, token, timestamp, low_battery, sensor_data = packet_data
+
+            with lb_lock:
+                if low_battery and sensor_id == 1:
+                    lb_counter += 1
+                    print(f"Low Battery Counter: {lb_counter}")
 
             with sensors_lock:
                 sensor_info = sensors.get(sensor_id)
