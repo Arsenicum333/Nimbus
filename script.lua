@@ -3,7 +3,7 @@ fiit_meteo_proto = Proto("FIITMeteo", "FIITMeteo IoT Protocol")
 local f = fiit_meteo_proto.fields
 
 f.first_byte = ProtoField.uint8("fiit.first_byte", "First Byte", base.HEX)
-f.packet_type = ProtoField.uint8("fiit.packet_type", "Packet Type", base.DEC, {
+local PACKET_TYPES = {
     [0] = "REGISTRATION",
     [1] = "DATA",
     [2] = "ACTIVITY_CONFIRMATION",
@@ -12,14 +12,17 @@ f.packet_type = ProtoField.uint8("fiit.packet_type", "Packet Type", base.DEC, {
     [5] = "REQUEST_RESEND",
     [6] = "INVALID_TOKEN",
     [7] = "ACTIVITY_CHECK"
-}, 0xE0)
+}
 
-f.sensor_id = ProtoField.uint8("fiit.sensor_id", "Sensor ID", base.DEC, {
+local SENSOR_TYPES = {
     [0] = "THERMONODE",
     [1] = "WINDSENSE",
     [2] = "RAINDETECT",
     [3] = "AIRQUALITYBOX"
-}, 0x18)
+}
+
+f.packet_type = ProtoField.uint8("fiit.packet_type", "Packet Type", base.DEC, PACKET_TYPES, 0xE0)
+f.sensor_id = ProtoField.uint8("fiit.sensor_id", "Sensor ID", base.DEC, SENSOR_TYPES, 0x18)
 
 f.low_battery = ProtoField.bool("fiit.low_battery", "Low Battery", 8, nil, 0x04)
 f.timestamp = ProtoField.uint32("fiit.timestamp", "Timestamp", base.DEC)
@@ -27,7 +30,7 @@ f.token = ProtoField.uint32("fiit.token", "Token", base.DEC)
 f.checksum = ProtoField.uint32("fiit.checksum", "Checksum", base.DEC)
 
 function fiit_meteo_proto.dissector(buffer, pinfo, tree)
-    length = buffer:len()
+    local length = buffer:len()
     if length == 0 then return end
 
     pinfo.cols.protocol = fiit_meteo_proto.name
@@ -48,22 +51,8 @@ function fiit_meteo_proto.dissector(buffer, pinfo, tree)
         subtree:add(f.low_battery, buffer(0,1))
     end
 
-    local packet_type_str = "UNKNOWN"
-    local sensor_type_str = "UNKNOWN"
-
-    if packet_type == 0 then packet_type_str = "REGISTRATION"
-    elseif packet_type == 1 then packet_type_str = "DATA"
-    elseif packet_type == 2 then packet_type_str = "ACTIVITY_CONFIRMATION"
-    elseif packet_type == 3 then packet_type_str = "REGISTRATION_RESPONSE"
-    elseif packet_type == 4 then packet_type_str = "DATA_RECEIVED"
-    elseif packet_type == 5 then packet_type_str = "REQUEST_RESEND"
-    elseif packet_type == 6 then packet_type_str = "INVALID_TOKEN"
-    elseif packet_type == 7 then packet_type_str = "ACTIVITY_CHECK" end
-
-    if sensor_id == 0 then sensor_type_str = "THERMONODE"
-    elseif sensor_id == 1 then sensor_type_str = "WINDSENSE"
-    elseif sensor_id == 2 then sensor_type_str = "RAINDETECT"
-    elseif sensor_id == 3 then sensor_type_str = "AIRQUALITYBOX" end
+    local packet_type_str = PACKET_TYPES[packet_type] or "UNKNOWN"
+    local sensor_type_str = SENSOR_TYPES[sensor_id] or "UNKNOWN"
 
     local battery_info = ""
     if low_battery and (packet_type == 0 or packet_type == 1 or packet_type == 2) then

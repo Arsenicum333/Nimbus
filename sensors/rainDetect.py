@@ -1,4 +1,4 @@
-from enums.FloodRisk import FloodRisk
+from enums.floodRisk import FloodRisk
 
 class RainDetect:
     def __init__(self, rainfall: float, soil_moisture: float, flood_risk: FloodRisk, rain_duration: int, low_battery: bool):

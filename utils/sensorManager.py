@@ -1,7 +1,7 @@
 import threading
 import time
 
-from utils.RandomData import random_data
+from utils.randomData import random_data
 
 class SensorManager:
     def __init__(self, sensor_id, send_function):

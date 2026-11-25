@@ -2,19 +2,23 @@ import socket
 import threading
 import time
 
-from enums.SensorID import SensorID
-from utils.ManualData import manual_data
-from utils.SensorManager import SensorManager
-from utils.BinaryProtocol import *
+from enums.sensorId import SensorID
+from utils.manualData import manual_data
+from utils.userInput import choose_sensor
+from utils.sensorManager import SensorManager
+from utils.binaryProtocol import *
 
 SERVER_IP = "127.0.0.1"
 SERVER_PORT = 5005
 BUFFER_SIZE = 1024
+REGISTRATION_TIMEOUT = 2.0
 
 sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-sock.settimeout(2.0)
+sock.bind(("0.0.0.0", 0))
+sock.settimeout(1.0)
 
 tokens = {}
+registered_events = {sensor.value: threading.Event() for sensor in SensorID}
 last_payloads = {}
 corrupt_next = set()
 simulated_disconnected = set()
@@ -31,39 +35,33 @@ pending_acks_lock = threading.Lock()
 server_address = (SERVER_IP, SERVER_PORT)
 
 def register(sensor_id):
+    # The response is received by handle_server_messages(), which sets the event
+    event = registered_events[sensor_id]
+    event.clear()
+
     try:
         packet = pack_registration(sensor_id, int(time.time()), False)
         send_binary(sock, packet, server_address)
-
-        data, addr = sock.recvfrom(BUFFER_SIZE)
-        result = parse_binary_packet(data)
-
-        if result and result[0] == 'REGISTRATION_RESPONSE':
-            sensor_id_received, token, timestamp = result[1]
-            with tokens_lock:
-                tokens[sensor_id] = token
-            print(f"INFO: [{sensor_id}] Registered successfully (token={token})")
-            return True
-        else:
-            print(f"ERROR: [{sensor_id}] Invalid registration response")
-            return False
-
-    except socket.timeout:
-        print(f"ERROR: [{sensor_id}] Registration timeout")
-        return False
     except Exception as e:
         print(f"ERROR: [{sensor_id}] Registration failed: {e}")
         return False
+
+    if not event.wait(REGISTRATION_TIMEOUT):
+        print(f"ERROR: [{sensor_id}] Registration timeout")
+        return False
+    return True
 
 def build_payload(sensor_id, obj):
     with tokens_lock:
         token = tokens.get(sensor_id)
 
-    if not token:
+    if token is None:
         if not register(sensor_id):
             return None
         with tokens_lock:
             token = tokens.get(sensor_id)
+        if token is None:
+            return None
 
     low_battery = getattr(obj, "low_battery", False)
 
@@ -145,8 +143,6 @@ def check_pending_acks():
                     print(f"WARNING: [{sensor_id}] Max retry attempts reached")
 
 def handle_server_messages():
-    sock.settimeout(1.0)
-
     while True:
         try:
             data, addr = sock.recvfrom(BUFFER_SIZE)
@@ -157,7 +153,14 @@ def handle_server_messages():
 
             packet_type, packet_data = result
 
-            if packet_type == 'REQUEST_RESEND':
+            if packet_type == 'REGISTRATION_RESPONSE':
+                sensor_id, token, timestamp = packet_data
+                with tokens_lock:
+                    tokens[sensor_id] = token
+                print(f"INFO: [{sensor_id}] Registered successfully (token={token})")
+                registered_events[sensor_id].set()
+
+            elif packet_type == 'REQUEST_RESEND':
                 sensor_id, timestamp = packet_data
                 print(f"INFO: [{sensor_id}] Received resend request")
 
@@ -190,7 +193,7 @@ def handle_server_messages():
                         if activity_count >= 3:
                             with tokens_lock:
                                 token = tokens.get(sensor_id)
-                            if token:
+                            if token is not None:
                                 packet = pack_activity_confirmation(sensor_id, token, int(time.time()), False)
                                 send_binary(sock, packet, server_address)
                                 simulated_disconnected.discard(sensor_id)
@@ -201,7 +204,7 @@ def handle_server_messages():
                     else:
                         with tokens_lock:
                             token = tokens.get(sensor_id)
-                        if token:
+                        if token is not None:
                             packet = pack_activity_confirmation(sensor_id, token, int(time.time()), False)
                             send_binary(sock, packet, server_address)
                             print(f"INFO: [{sensor_id}] Sent activity confirmation")
@@ -212,9 +215,12 @@ def handle_server_messages():
                 with tokens_lock:
                     if sensor_id in tokens:
                         del tokens[sensor_id]
-                register(sensor_id)
+                # register() waits for a response that only this thread can receive
+                threading.Thread(target = register, args = (sensor_id,), daemon = True).start()
 
         except socket.timeout:
+            continue
+        except ConnectionResetError:
             continue
         except Exception as e:
             print(f"ERROR: Handling server message: {e}")
@@ -223,9 +229,6 @@ def start_all_sensors():
     try:
         for sensor_id in sensors.keys():
             register(sensor_id)
-
-        threading.Thread(target = handle_server_messages, daemon = True).start()
-        threading.Thread(target = check_pending_acks, daemon = True).start()
 
         for sensor in sensors.values():
             sensor.start()
@@ -243,62 +246,28 @@ def stop_all_sensors():
     print("INFO: All sensors stopped")
 
 def send_manual_message():
-    print("\nSelect sensor for manual message:")
-    for sensor in SensorID:
-        print(f"{sensor.value}) {sensor.name}")
+    sensor_id = choose_sensor("Select sensor for manual message:")
+    sensor_obj = manual_data(SensorID(sensor_id))
 
-    try:
-        sensor_id = int(input("Enter sensor ID: "))
-        if sensor_id not in [s.value for s in SensorID]:
-            print("ERROR: Invalid sensor ID")
-            return
-
-        sensor_obj = manual_data(SensorID(sensor_id))
-
-        make_data(sensor_id, sensor_obj)
-        print(f"INFO: Manual message sent for sensor {sensor_id}")
-
-    except ValueError:
-        print("ERROR: Invalid input")
+    make_data(sensor_id, sensor_obj)
+    print(f"INFO: Manual message sent for sensor {sensor_id}")
 
 def corrupt_next_packet():
-    print("\nSelect sensor to corrupt next packet:")
-    for sensor in SensorID:
-        print(f"{sensor.value}) {sensor.name}")
+    sensor_id = choose_sensor("Select sensor to corrupt next packet:")
 
-    try:
-        sensor_id = int(input("Enter sensor ID: "))
-        if sensor_id not in [s.value for s in SensorID]:
-            print("ERROR: Invalid sensor ID")
-            return
+    with corrupt_lock:
+        corrupt_next.add(sensor_id)
 
-        with corrupt_lock:
-            corrupt_next.add(sensor_id)
-
-        print(f"INFO: Next packet from sensor {sensor_id} will be corrupted")
-
-    except ValueError:
-        print("ERROR: Invalid input")
+    print(f"INFO: Next packet from sensor {sensor_id} will be corrupted")
 
 def simulate_disconnection():
-    print("\nSelect sensor to simulate disconnection:")
-    for sensor in SensorID:
-        print(f"{sensor.value}) {sensor.name}")
+    sensor_id = choose_sensor("Select sensor to simulate disconnection:")
 
-    try:
-        sensor_id = int(input("Enter sensor ID: "))
-        if sensor_id not in [s.value for s in SensorID]:
-            print("ERROR: Invalid sensor ID")
-            return
+    with disconnect_lock:
+        simulated_disconnected.add(sensor_id)
+        activity_check_counters[sensor_id] = 0
 
-        with disconnect_lock:
-            simulated_disconnected.add(sensor_id)
-            activity_check_counters[sensor_id] = 0
-
-        print(f"INFO: Sensor {sensor_id} simulated as disconnected")
-
-    except ValueError:
-        print("ERROR: Invalid input")
+    print(f"INFO: Sensor {sensor_id} simulated as disconnected")
 
 sensors = {
     SensorID.THERMONODE.value: SensorManager(SensorID.THERMONODE.value, make_data),
@@ -311,6 +280,10 @@ def main():
     global SERVER_IP, SERVER_PORT, server_address
 
     print("===== Tester =====")
+
+    # Background workers run for the whole lifetime of the program
+    threading.Thread(target = handle_server_messages, daemon = True).start()
+    threading.Thread(target = check_pending_acks, daemon = True).start()
 
     while True:
         print("\nMenu:")

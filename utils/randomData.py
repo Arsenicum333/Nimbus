@@ -1,10 +1,10 @@
 import random
 
-from enums.FloodRisk import FloodRisk
-from sensors.AirQualityBox import AirQualityBox
-from sensors.RainDetect import RainDetect
-from sensors.ThermoNode import ThermoNode
-from sensors.WindSense import WindSense
+from enums.floodRisk import FloodRisk
+from sensors.airQualityBox import AirQualityBox
+from sensors.rainDetect import RainDetect
+from sensors.thermoNode import ThermoNode
+from sensors.windSense import WindSense
 
 def random_data(sensorID):
     if sensorID == 0:

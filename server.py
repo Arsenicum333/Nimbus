@@ -3,13 +3,20 @@ import socket
 import time
 import threading
 
-from enums.PacketType import PacketType
-from utils.BinaryProtocol import *
-from utils.FormatData import format_data
+from enums.packetType import PacketType
+from utils.binaryProtocol import *
+from utils.formatData import format_data
+from utils.userInput import choose_sensor
 
 SERVER_IP = "0.0.0.0"
 SERVER_PORT = 5005
 BUFFER_SIZE = 1024
+
+ACTIVITY_TIMEOUT = 15.0    # silence before the first activity check
+CHECK_REPLY_TIMEOUT = 1.0  # unanswered check -> DISCONNECTED
+CHECK_INTERVAL = 5.0       # spacing between activity checks
+MAX_CHECKS = 10
+NO_ACK_COUNT = 3
 
 sensors = {}
 
@@ -35,8 +42,20 @@ def update_sensor_activity(sensor_id, addr = None, token = None):
                 "addr": addr,
                 "last_seen": time.time(),
                 "activity_checks_sent": 0,
+                "last_activity_check_time": 0.0,
+                "alerted": False,
                 "disconnected": False
             }
+
+def mark_alive(sensor_id):
+    with sensors_lock:
+        sensor_info = sensors.get(sensor_id)
+        if sensor_info is None:
+            return
+        if sensor_info["disconnected"]:
+            print(f"INFO: {sensor_id} RECONNECTED!")
+        sensor_info["disconnected"] = False
+        sensor_info["activity_checks_sent"] = 0
 
 def send_activity_check(sock, sensor_id, addr):
     try:
@@ -52,20 +71,16 @@ def handle_packet(sock, data, addr):
     try:
         result = parse_binary_packet(data)
         if not result:
-            print(f"WARNING: Failed to decode packet from {addr}")
+            packet_type = (data[0] >> 5) & 0x7 if data else None
 
-            if len(data) > 0:
-                try:
-                    first_byte = data[0]
-                    packet_type = (first_byte >> 5) & 0x7
-                    sensor_id = (first_byte >> 3) & 0x3
-
-                    if packet_type == PacketType.DATA.value:
-                        print(f"INFO: {sensor_id} CORRUPTED DATA. REQUESTING RESEND")
-                        response = pack_server_packet(PacketType.REQUEST_RESEND, sensor_id, int(time.time()))
-                        send_binary(sock, response, addr)
-                except:
-                    print(f"WARNING: Could not extract sensor_id from corrupted packet")
+            if packet_type == PacketType.DATA.value and len(data) >= 9:
+                sensor_id = (data[0] >> 3) & 0x3
+                timestamp = int.from_bytes(data[5:9], "big")
+                print(f"INFO: {sensor_id} CORRUPTED DATA at {timestamp}. REQUESTING DATA")
+                response = pack_server_packet(PacketType.REQUEST_RESEND, sensor_id, int(time.time()))
+                send_binary(sock, response, addr)
+            else:
+                print(f"WARNING: Failed to decode packet from {addr}")
             return
 
         packet_type, packet_data = result
@@ -97,20 +112,15 @@ def handle_packet(sock, data, addr):
                     return
 
             update_sensor_activity(sensor_id)
-
-            with sensors_lock:
-                if sensors[sensor_id].get("disconnected", False):
-                    print(f"INFO: {sensor_id} RECONNECTED!")
-                    sensors[sensor_id]["disconnected"] = False
-                    sensors[sensor_id]["activity_checks_sent"] = 0
+            mark_alive(sensor_id)
 
             print(format_data(sensor_id, timestamp, sensor_data, low_battery))
 
             with no_ack_lock:
                 if no_ack_mode == sensor_id:
                     no_ack_counter += 1
-                    print(f"INFO: {sensor_id} no-ACK mode - counter: {no_ack_counter}/3")
-                    if no_ack_counter >= 3:
+                    print(f"INFO: {sensor_id} no-ACK mode - counter: {no_ack_counter}/{NO_ACK_COUNT}")
+                    if no_ack_counter >= NO_ACK_COUNT:
                         no_ack_mode = None
                         no_ack_counter = 0
                         print(f"INFO: {sensor_id} no-ACK mode disabled")
@@ -123,12 +133,7 @@ def handle_packet(sock, data, addr):
             sensor_id, token, timestamp, low_battery = packet_data
 
             update_sensor_activity(sensor_id)
-
-            with sensors_lock:
-                if sensors[sensor_id].get("disconnected", False):
-                    print(f"INFO: {sensor_id} RECONNECTED!")
-                    sensors[sensor_id]["disconnected"] = False
-                    sensors[sensor_id]["activity_checks_sent"] = 0
+            mark_alive(sensor_id)
 
     except Exception as e:
         print(f"ERROR: Handling packet from {addr}: {e}")
@@ -140,40 +145,25 @@ def monitor_sensors(stop_event, sock):
             current_time = time.time()
 
             with sensors_lock:
-                sensors_to_check = list(sensors.items())
+                for sensor_id, sensor_info in sensors.items():
+                    if current_time - sensor_info["last_seen"] <= ACTIVITY_TIMEOUT:
+                        continue
 
-            for sensor_id, sensor_info in sensors_to_check:
-                time_since_last_seen = current_time - sensor_info["last_seen"]
+                    checks_sent = sensor_info["activity_checks_sent"]
+                    time_since_last_check = current_time - sensor_info["last_activity_check_time"]
 
-                if time_since_last_seen > 15:
-                    if sensor_info["activity_checks_sent"] == 0:
+                    # Check every CHECK_INTERVAL seconds, at most MAX_CHECKS times
+                    if checks_sent == 0 or (checks_sent < MAX_CHECKS and time_since_last_check >= CHECK_INTERVAL):
                         send_activity_check(sock, sensor_id, sensor_info["addr"])
-                        sensor_info["activity_checks_sent"] = 1
+                        sensor_info["activity_checks_sent"] += 1
                         sensor_info["last_activity_check_time"] = current_time
+                        sensor_info["alerted"] = False
+
+                    # Check left unanswered for CHECK_REPLY_TIMEOUT -> DISCONNECTED
+                    elif not sensor_info["alerted"] and time_since_last_check >= CHECK_REPLY_TIMEOUT:
                         print(f"WARNING: {sensor_id} DISCONNECTED!")
+                        sensor_info["alerted"] = True
                         sensor_info["disconnected"] = True
-
-                    elif sensor_info["activity_checks_sent"] < 10:
-                        time_since_last_check = current_time - sensor_info["last_activity_check_time"]
-
-                        if sensor_info["activity_checks_sent"] == 1 and time_since_last_check >= 5.0:
-                            send_activity_check(sock, sensor_id, sensor_info["addr"])
-                            sensor_info["activity_checks_sent"] = 2
-                            sensor_info["last_activity_check_time"] = current_time
-                            print(f"WARNING: {sensor_id} DISCONNECTED!")
-
-                        elif sensor_info["activity_checks_sent"] >= 2 and time_since_last_check >= 5.0:
-                            send_activity_check(sock, sensor_id, sensor_info["addr"])
-                            sensor_info["activity_checks_sent"] += 1
-                            sensor_info["last_activity_check_time"] = current_time
-
-                else:
-                    if sensor_info["activity_checks_sent"] > 0:
-                        was_disconnected = sensor_info.get("disconnected", False)
-                        sensor_info["activity_checks_sent"] = 0
-                        if was_disconnected:
-                            print(f"INFO: {sensor_id} RECONNECTED!")
-                        sensor_info["disconnected"] = False
 
         except Exception as e:
             print(f"ERROR: Monitoring sensors: {e}")
@@ -190,8 +180,10 @@ def listen(stop_event, server_ip, server_port):
         while not stop_event.is_set():
             try:
                 data, addr = sock.recvfrom(BUFFER_SIZE)
-                threading.Thread(target = handle_packet, args = (sock, data, addr), daemon = True).start()
+                handle_packet(sock, data, addr)
             except socket.timeout:
+                continue
+            except ConnectionResetError:
                 continue
     finally:
         sock.close()
@@ -199,24 +191,13 @@ def listen(stop_event, server_ip, server_port):
 def set_no_ack_device():
     global no_ack_mode, no_ack_counter
 
-    print("\nSelect device for no-ACK mode:")
-    from enums.SensorID import SensorID
-    for sensor in SensorID:
-        print(f"{sensor.value}) {sensor.name}")
+    sensor_id = choose_sensor("Select device for no-ACK mode:")
 
-    try:
-        sensor_id = int(input("Enter sensor ID: "))
-        if sensor_id not in [s.value for s in SensorID]:
-            print("ERROR: Invalid sensor ID")
-            return
+    with no_ack_lock:
+        no_ack_mode = sensor_id
+        no_ack_counter = 0
 
-        with no_ack_lock:
-            no_ack_mode = sensor_id
-            no_ack_counter = 0
-
-        print(f"INFO: Device {sensor_id} set to no-ACK mode (will ignore 3 ACKs)")
-    except ValueError:
-        print("ERROR: Invalid input")
+    print(f"INFO: Device {sensor_id} set to no-ACK mode (will ignore {NO_ACK_COUNT} ACKs)")
 
 def main():
     global SERVER_IP, SERVER_PORT
