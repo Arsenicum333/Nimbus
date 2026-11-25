@@ -1,8 +1,8 @@
-fiit_meteo_proto = Proto("FIITMeteo", "FIITMeteo IoT Protocol")
+nimbus_proto = Proto("Nimbus", "Nimbus IoT Weather Protocol")
 
-local f = fiit_meteo_proto.fields
+local f = nimbus_proto.fields
 
-f.first_byte = ProtoField.uint8("fiit.first_byte", "First Byte", base.HEX)
+f.first_byte = ProtoField.uint8("nimbus.first_byte", "First Byte", base.HEX)
 local PACKET_TYPES = {
     [0] = "REGISTRATION",
     [1] = "DATA",
@@ -21,21 +21,21 @@ local SENSOR_TYPES = {
     [3] = "AIRQUALITYBOX"
 }
 
-f.packet_type = ProtoField.uint8("fiit.packet_type", "Packet Type", base.DEC, PACKET_TYPES, 0xE0)
-f.sensor_id = ProtoField.uint8("fiit.sensor_id", "Sensor ID", base.DEC, SENSOR_TYPES, 0x18)
+f.packet_type = ProtoField.uint8("nimbus.packet_type", "Packet Type", base.DEC, PACKET_TYPES, 0xE0)
+f.sensor_id = ProtoField.uint8("nimbus.sensor_id", "Sensor ID", base.DEC, SENSOR_TYPES, 0x18)
 
-f.low_battery = ProtoField.bool("fiit.low_battery", "Low Battery", 8, nil, 0x04)
-f.timestamp = ProtoField.uint32("fiit.timestamp", "Timestamp", base.DEC)
-f.token = ProtoField.uint32("fiit.token", "Token", base.DEC)
-f.checksum = ProtoField.uint32("fiit.checksum", "Checksum", base.DEC)
+f.low_battery = ProtoField.bool("nimbus.low_battery", "Low Battery", 8, nil, 0x04)
+f.timestamp = ProtoField.uint32("nimbus.timestamp", "Timestamp", base.DEC)
+f.token = ProtoField.uint32("nimbus.token", "Token", base.DEC)
+f.checksum = ProtoField.uint32("nimbus.checksum", "Checksum", base.DEC)
 
-function fiit_meteo_proto.dissector(buffer, pinfo, tree)
+function nimbus_proto.dissector(buffer, pinfo, tree)
     local length = buffer:len()
     if length == 0 then return end
 
-    pinfo.cols.protocol = fiit_meteo_proto.name
+    pinfo.cols.protocol = nimbus_proto.name
 
-    local subtree = tree:add(fiit_meteo_proto, buffer(), "FIITMeteo Protocol")
+    local subtree = tree:add(nimbus_proto, buffer(), "Nimbus Protocol")
 
     local first_byte = buffer(0,1):uint()
     subtree:add(f.first_byte, buffer(0,1))
@@ -135,4 +135,4 @@ function fiit_meteo_proto.dissector(buffer, pinfo, tree)
 end
 
 local udp_port = DissectorTable.get("udp.port")
-udp_port:add(5005, fiit_meteo_proto)
+udp_port:add(5005, nimbus_proto)
